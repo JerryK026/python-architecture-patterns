@@ -1,35 +1,57 @@
 import os
 import shutil
 from pathlib import Path
+from typing import Dict
 
 from sync import hash_file
 
 
-def sync(source, dest):
-    source_hashes = {}
-    for folder, _, files in os.walk(source):
+def sync(source: str, dest: str):
+    # IO
+    source_hashes = read_paths_and_hashes(source)
+    dest_hashes = read_paths_and_hashes(dest)
+
+    # biz
+    actions = determine_actions(source_hashes, dest_hashes, source, dest)
+
+    # apply action
+    for action, *paths in actions:
+        if action == 'copy':
+            shutil.copyfile(*paths)
+        if action == 'move':
+            shutil.move(*paths)
+        if action == 'delete':
+            os.remove(paths[0])
+
+
+# IO
+def read_paths_and_hashes(root: str) -> Dict[str, Path]:
+    hashes = {}
+    for folder, _, files in os.walk(root):
         for fn in files:
-            source_hashes[hash_file(Path(folder) / fn)] = fn
+            hashes[hash_file(Path(folder) / fn)] = fn
 
-    # 사본 폴더에서 찾은 파일을 추적한다
-    seen = set()
+    return hashes
 
-    # 사본 폴더 자식들을 순회하며 파일 이름과 해시를 얻는다
-    for folder, _, files in os.walk(dest):
-        for fn in files:
-            dest_path = Path(folder) / fn
-            dest_hash = hash_file(dest_path)
-            seen.add(dest_hash)
 
-            # 사본에는 있지만 원본에 없는 파일을 찾으면 삭제한다
-            if dest_hash not in source_hashes:
-                dest_path.remove()
+# biz
+def determine_actions(
+        src_hashes: Dict[str, Path],
+        dst_hashes: Dict[str, Path],
+        src_folder: str,
+        dst_folder: str,
+):
+    for sha, filename in src_hashes.items():
+        if sha not in dst_hashes:
+            sourcepath = Path(src_folder) / filename
+            destpath = Path(dst_folder) / filename
+            yield 'copy', sourcepath, destpath
 
-            # 사본에 있는 파일이 원본과 다른 이름이라면
-            # 사본 이름을 올바른 이름(원본 이름)으로 바꾼다
-            elif dest_hash in source_hashes and fn != source_hashes[dest_hash]:
-                shutil.move(dest_path, Path(folder) / source_hashes[dest_hash])
+        elif dst_hashes[sha] != filename:
+            olddestpath = Path(dst_folder) / dst_hashes[sha]
+            newdestpath = Path(dst_folder) / filename
+            yield 'move', olddestpath, newdestpath
 
-    for src_hash, fn in source_hashes.items():
-        if src_hash not in seen:
-            shutil.copy(Path(source) / fn, Path(dest) / fn)
+    for sha, filename in dst_hashes.items():
+        if sha not in src_hashes:
+            yield 'delete', dst_folder / filename
